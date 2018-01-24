@@ -42,6 +42,25 @@ const (
 	pushMetricHelp = "Last Unix time when this group was changed in the Pushgateway."
 )
 
+var timeoutMap = make(map[string]chan string)
+
+func timeoutHandler(timeout chan string, labels map[string]string, labelsString string, ms storage.MetricStore) {
+	for {
+		select {
+		case <-timeout:
+		case <-time.After(time.Minute * 30):
+			ms.SubmitWriteRequest(storage.WriteRequest{
+				Labels:    labels,
+				Timestamp: time.Now(),
+			})
+			fmt.Println("timeout: ", labelsString)
+			delete(timeoutMap, labelsString)
+			close(timeout)
+			return
+		}
+	}
+}
+
 // Push returns an http.Handler which accepts samples over HTTP and stores them
 // in the MetricStore. If replace is true, all metrics for the job and instance
 // given by the request are deleted before new ones are stored.
@@ -121,6 +140,13 @@ func Push(
 				Timestamp:      now,
 				MetricFamilies: metricFamilies,
 			})
+			if val, exist := timeoutMap[labelsString]; !exist {
+				c := make(chan string, 1)
+				timeoutMap[labelsString] = c
+				go timeoutHandler(c, labels, labelsString, ms)
+			} else {
+				val <- labelsString
+			}
 			w.WriteHeader(http.StatusAccepted)
 		},
 	)
